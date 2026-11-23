@@ -1,5 +1,5 @@
 import { demo, position, validate, analyze, evaluate, scenarioRows,criticalPrices } from './engine.js';
-import {marketData,catalog,findInstrument,instrumentSettings,categoryNames,accountNames,specMarginLabel,conversionRate} from './instruments.js';
+import {marketData,catalog,findInstrument,instrumentSettings,categoryNames,accountNames,specMarginLabel,profiles,profileInfo,groupApplicationPlan} from './instruments.js';
 import {parseCsv,csvTemplate} from './csv.js';
 
 const $ = id => document.getElementById(id);
@@ -13,7 +13,7 @@ const money = x => `${num(x)} ${state.account.currency}`;
 const names = { normal:'Выше порогов', call:'Margin Call', stopout:'Stop Out', 'no-margin':'Нет маржи' };
 const status = x => `<span class="status ${escape(x)}">${names[x]??'—'}</span>`;
 const clone = x => structuredClone(x);
-function deskDemo(){const s=demo();s.brokerAccount='mt4-real-ecn';s.account.marginPolicy='gross';s.account.marginSource='terminal';s.account.usedMargin=1000;s.account.thresholdUnit='percent';s.account.label='DEMO / клиентский счет';s.searchDown=99;s.searchUp=500;Object.assign(s.positions[0],instrumentSettings(findInstrument('EURUSD',s.brokerAccount),'USD',s.brokerAccount),{lots:1});return s;}
+function deskDemo(){const s=demo();s.brokerAccount='mt5-real-ecn';s.account.marginPolicy='gross';s.account.marginSource='terminal';s.account.usedMargin=1000;s.account.thresholdUnit='percent';s.account.label='DEMO / клиентский счет';s.searchDown=99;s.searchUp=500;Object.assign(s.positions[0],instrumentSettings(findInstrument('EURUSD',s.brokerAccount),'USD',s.brokerAccount),{lots:1});return s;}
 let timer, storageWarned = false, saved = [], state = deskDemo(), lastAnalysis;
 function toast(message) { $('toast').textContent=message;$('toast').classList.add('visible');clearTimeout(timer);timer=setTimeout(()=>$('toast').classList.remove('visible'),4200); }
 function readState(value) {
@@ -46,13 +46,22 @@ if(location.hash.startsWith('#s=')) {
   } catch { toast('Не удалось открыть сценарий: ссылка повреждена.'); }
 }
 function syncTheme() { const light=document.documentElement.dataset.theme==='light';$('theme').setAttribute('aria-label',`Переключить ${light?'темную':'светлую'} тему`); }
+function profileOptions(selected){return ['MT5','MT4'].map(platform=>`<optgroup label="${platform==='MT5'?'MT5 · группы клиента':'MT4 · справочные профили'}">${Object.entries(profiles).filter(([,p])=>p.platform===platform).map(([id,p])=>`<option value="${id}" ${selected===id?'selected':''}>${escape(p.label)}</option>`).join('')}</optgroup>`).join('');}
+function renderGroupSummary(){
+  const selected=state.brokerAccount??'mt4-real-ecn',info=profileInfo(selected);
+  if(!info){$('selected-group-info').textContent='Неизвестная группа. Выберите профиль из каталога.';return;}
+  const applied=state.positions.every(p=>p.spec?.accountType===selected);
+  $('selected-group-info').innerHTML=`<code>${escape(info.group??'Справочный профиль MT4')}</code><span>${info.instrumentCount} инструментов · ${info.currency} · ${applied?'применено к позициям':'позиции имеют другие настройки'}</span>${info.platform==='MT5'?'<small>Пороги группы не переданы API; используются 100% / 20% из MVP.</small>':''}`;
+  $('apply-group').disabled=false;
+}
 function accountControls() {
   for(const el of document.querySelectorAll('[data-account]'))el.value=state.account[el.dataset.account];
   const balance=state.account.mode==='balance';
   $('capital-label').textContent=balance?'Баланс счета':'Текущий Equity';
   $('capital-help').textContent=balance?'Добавим текущий P&L и корректировки.':'Включая плавающий результат всех позиций.';
   $('adjustment-field').hidden=!balance;
-  $('broker-profile').value=state.brokerAccount??'mt4-real-ecn';
+  $('broker-profile').innerHTML=profileOptions(state.brokerAccount??'mt4-real-ecn');
+  renderGroupSummary();
   $('account-label').value=state.account.label??'';
   $('margin-policy').value=state.account.marginPolicy??'gross';
   $('threshold-unit').value=state.account.thresholdUnit??'percent';
@@ -99,10 +108,11 @@ function renderPositions() {
       <label class="field wide-field">Модель маржи<select data-position="marginMode">${p.spec?`<option value="broker" ${p.marginMode==='broker'?'selected':''}>Investizo · ${escape(specMarginLabel(p.spec))}</option>`:''}<option value="dynamic" ${p.marginMode==='dynamic'?'selected':''}>Плавающая · номинал / плечо</option><option value="fixed" ${p.marginMode==='fixed'?'selected':''}>Фиксированная · по текущей цене</option><option value="manual" ${p.marginMode==='manual'?'selected':''}>Ручная · сумма из терминала</option></select><small>${p.spec?`${escape(accountNames[p.spec.accountType]??'Investizo')} · мин. ${p.spec.lotMin}, шаг ${p.spec.lotStep}, макс. ${p.spec.lotMax} лота`: 'Для нестандартных условий используйте ручную маржу.'}</small></label>
       ${p.spec&&p.marginMode==='broker'&&p.spec.marginCurrency!==state.account.currency&&!(p.spec.marginMode===0&&p.spec.marginCurrency===p.spec.base)?field(`1 ${escape(p.spec.marginCurrency)} → ${escape(state.account.currency)} (маржа)`,'marginConversion',p.marginConversion,'min="0"','Курс валюты маржи; отдельно от валюты P&L'):''}
       ${field(`Ручная маржа, ${escape(state.account.currency)}`,'manualMargin',p.manualMargin,`min="0" ${p.marginMode!=='manual'?'disabled':''}`,'Сумма для всей позиции, а не одного лота')}
-    </div></details>${p.spec?`<div class="spec-source"><span>${escape(accountNames[p.spec.accountType]??'Investizo')} · ${escape(specMarginLabel(p.spec))}</span>${p.spec.tradeMode===1?'<span class="negative">Только закрытие</span>':''}<button class="text-button" data-spec-view>Спецификация</button></div>`:''}
+    </div></details>${p.spec?`<div class="spec-source"><span>${escape(accountNames[p.spec.accountType]??'Investizo')} · ${escape(specMarginLabel(p.spec))}</span>${p.spec.group?`<code>${escape(p.spec.group)}</code>`:''}${p.spec.tradeMode===1?'<span class="negative">Только закрытие</span>':''}<button class="text-button" data-spec-view>Спецификация</button></div>`:''}
   </article>`).join('');
   $('position-count').textContent=state.positions.length;
   $('add-position').disabled=false;
+  renderGroupSummary();
 }
 function syncShockControls() {
   const span=Math.max(state.range,Math.ceil(Math.abs(state.shock)));
@@ -244,14 +254,14 @@ document.addEventListener('change',e=>{
   }
   if(['symbol','quote'].includes(el.dataset.position)){renderPositions();compute();}
 });
-$('capital-mode').onclick=e=>{const b=e.target.closest('[data-mode]');if(!b)return;const mode=b.dataset.mode;if(mode===state.account.mode)return;const r=analyze(state);if(!r.errors.length){if(mode==='balance')state.account.capital=r.current.equity-state.account.adjustment-r.c.positions.reduce((s,p)=>s+p.pnl,0);else state.account.capital=r.current.equity;}state.account.mode=mode;accountControls();renderPositions();compute();toast('Режим переключен с сохранением текущего Equity.');};
+$('capital-mode').onclick=e=>{const b=e.target.closest('[data-mode]');if(!b)return;const mode=b.dataset.mode;if(mode===state.account.mode)return;const r=analyze(state);const canPreserve=!r.errors.length&&(mode!=='balance'||r.c.positions.every(p=>Number.isFinite(p.pnl)));if(canPreserve){if(mode==='balance')state.account.capital=r.current.equity-state.account.adjustment-r.c.positions.reduce((s,p)=>s+p.pnl,0);else state.account.capital=r.current.equity;}state.account.mode=mode;accountControls();renderPositions();compute();toast(canPreserve?'Режим переключен с сохранением текущего Equity.':'Укажите баланс и цены входа для расчета.');};
 $('positions').onclick=e=>{
   const row=e.target.closest('.position');if(!row)return;const p=state.positions.find(p=>p.id===row.dataset.id);
   const side=e.target.closest('[data-side]');if(side){p.side=side.dataset.side;renderPositions();compute();}
   if(e.target.closest('[data-remove]')&&state.positions.length>1){state.positions=state.positions.filter(x=>x.id!==p.id);renderPositions();compute();}
   if(e.target.closest('[data-spec-view]'))openCatalog(p.symbol,p.id);
 };
-$('add-position').onclick=()=>{const profile=state.brokerAccount??'mt4-real-ecn',p=position(instrumentSettings(findInstrument('EURUSD',profile),state.account.currency,profile));state.positions.push(p);renderPositions();compute();const row=document.querySelector(`[data-id="${CSS.escape(p.id)}"]`);row.querySelector('select').focus();toast('Позиция добавлена. Цена и спецификация взяты из снимка.');};
+$('add-position').onclick=()=>{const profile=state.brokerAccount??'mt4-real-ecn',spec=findInstrument('EURUSD',profile)??catalog(profile).find(p=>p.originalSymbol==='EURUSD')??catalog(profile)[0];if(!spec){toast('Выберите доступную группу.');return;}const p=position(instrumentSettings(spec,state.account.currency,profile));state.positions.push(p);renderPositions();compute();const row=document.querySelector(`[data-id="${CSS.escape(p.id)}"]`);row.querySelector('select').focus();toast('Позиция добавлена. Цена и спецификация взяты из снимка.');};
 $('shock').oninput=e=>setShock(Number(e.target.value));
 $('shock-number').oninput=e=>{state.shock=e.target.value===''?NaN:Number(e.target.value);if(Number.isFinite(state.shock))syncShockControls();compute();};
 $('zero-shock').onclick=()=>setShock(0);
@@ -288,21 +298,32 @@ $('settings-help').onclick=()=>$('legend-dialog').showModal();
 $('close-legend').onclick=()=>$('legend-dialog').close();
 $('legend-done').onclick=()=>$('legend-dialog').close();
 let catalogTarget=null,inspected='EURUSD';
-function openCatalog(symbol='EURUSD',target=null){catalogTarget=target;inspected=symbol;$('catalog-search').value='';$('catalog-category').value='';$('catalog-profile').value=state.brokerAccount??'mt4-real-ecn';renderCatalog();$('catalog-dialog').showModal();}
+function openCatalog(symbol='EURUSD',target=null){catalogTarget=target;inspected=symbol;$('catalog-search').value='';$('catalog-category').value='';const profile=target?state.positions.find(p=>p.id===target)?.spec?.accountType??state.brokerAccount:state.brokerAccount;$('catalog-profile').innerHTML=profileOptions(profile??'mt5-real-ecn');renderCatalog();$('catalog-dialog').showModal();}
 function renderCatalog(){
   const profile=$('catalog-profile').value,search=$('catalog-search').value.trim().toLowerCase(),category=$('catalog-category').value;
   const all=catalog(profile),list=all.filter(p=>(!category||p.category===category)&&(!search||(p.symbol+' '+p.description).toLowerCase().includes(search)));
-  $('catalog-source').textContent=`${list.length} из ${all.length} инструментов · ${accountNames[profile]} · снимок ${new Date(marketData.capturedAt).toLocaleDateString('ru-RU')}. Котировки не обновляются онлайн.`;
+  const meta=profileInfo(profile);
+  $('catalog-source').textContent=`${list.length} из ${all.length} инструментов · ${accountNames[profile]} · снимок ${new Date(meta.capturedAt).toLocaleDateString('ru-RU')}. Котировки не обновляются онлайн.`;
+  $('catalog-group-info').innerHTML=`<div><span class="tag">${meta.platform}</span><strong>${escape(meta.group??meta.label)}</strong><span>Валюта группы: ${meta.currency} · ${meta.instrumentCount} инструментов</span></div><p>${meta.platform==='MT5'?'Снимок эффективных спецификаций Investizo с учетом настроек выбранной группы. Названия групп сверены с GitLab, спецификации получены от сервера Investizo. Пороги Margin Call / Stop Out в снимке отсутствуют.':'Справочная спецификация MT4; не является группой MT5.'}</p>`;
   $('catalog-rows').innerHTML=list.map(p=>`<tr><td><button class="symbol-detail" data-inspect="${escape(p.symbol)}">${escape(p.symbol)}</button><small>${escape(p.description)}</small></td><td>${num(p.contract,0)}</td><td>${p.lotMin} / ${p.lotStep}</td><td>${p.marginMode===0?`FX / плечо / ${p.marginDivider}`:`CFD / ${p.marginDivider}`}</td><td><button class="text-button mint" data-catalog-add="${escape(p.symbol)}">${catalogTarget?'Применить':'Добавить'}</button></td></tr>`).join('')||'<tr><td colspan="5">Инструменты не найдены. Измените фильтр.</td></tr>';
-  const p=findInstrument(inspected,profile)??list[0];if(!p){$('catalog-detail').textContent='Нет выбранного инструмента';return;}
+  const p=list.find(s=>s.symbol===inspected)??list.find(s=>s.originalSymbol===inspected)??list[0];if(!p){$('catalog-detail').textContent='Нет выбранного инструмента';return;}
   const day={0:'Воскресенье',1:'Понедельник',2:'Вторник',3:'Среда',4:'Четверг',5:'Пятница',6:'Суббота'};
-  const fields=[['Класс активов',categoryNames[p.category]],['Контракт',num(p.contract,0)],['Валюта P&L',p.profitCurrency],['Валюта маржи',p.marginCurrency],['Модель маржи',specMarginLabel(p)],['Мин. / макс. лот',`${p.lotMin} / ${p.lotMax}`],['Шаг лота',p.lotStep],['Разрядность',p.digits],['Шаг цены',p.point],['Bid · снимок',num(p.bid,p.digits)],['Ask · снимок',num(p.ask,p.digits)],['Hedged Margin',p.hedgedMargin],['Коэффициент хеджа',p.hedgedMargin/p.contract],['Комиссия · снимок',`${p.commission}${p.commissionType===2?'%':' /лот'}`],['Swap long / short',`${p.swapLong} / ${p.swapShort}`],['Режим swap',({0:'Пункты',1:'В базовой валюте',2:'В валюте маржи',3:'% от цены'})[p.swapType]??'Не указан'],['Тройной swap',day[p.tripleSwapDay]??'Не указан'],['Доступность',p.tradeMode===2?'Полная торговля':p.tradeMode===1?'Только закрытие':'Торговля выключена']];
-  $('catalog-detail').innerHTML=`<span class="tag">${escape(accountNames[profile])}</span><h3>${escape(p.symbol)}</h3><p>${escape(p.description)}</p><dl>${fields.map(([k,v])=>`<dt>${escape(k)}</dt><dd>${escape(v)}</dd>`).join('')}</dl><p class="small-note">Комиссии и своп показаны для справки. Они не начисляются автоматически; накопленные суммы вводятся в позиции. Спецификации MT4 не выдаются за параметры групп MT5.</p>`;
+  const fields=[['Исходный символ',p.originalSymbol??p.symbol],['Класс активов',categoryNames[p.category]],['Контракт',num(p.contract,0)],['Валюта P&L',p.profitCurrency],['Валюта маржи',p.marginCurrency],['Модель маржи',specMarginLabel(p)],['Мин. / макс. лот',`${p.lotMin} / ${p.lotMax}`],['Шаг лота',p.lotStep],['Разрядность',p.digits],['Шаг цены',p.point],['Bid · снимок',p.quoteAvailable?num(p.bid,p.digits):'Нет корректной котировки'],['Ask · снимок',p.quoteAvailable?num(p.ask,p.digits):'Нет корректной котировки'],['Hedged Margin',p.hedgedMargin??'Не передан API'],['Коэффициент хеджа',p.hedgedMargin===null?'Не передан API':p.hedgedMargin/p.contract],['Комиссия · снимок',p.commissionKnown?`${p.commission}${p.commissionType===2?'%':' /лот'}`:'Не передана API'],['Своп включен',p.swapEnabled?'Да':'Нет по данным API'],['Swap long / short',`${p.swapLong} / ${p.swapShort}`],['Режим swap',({0:'Пункты',1:'В базовой валюте',2:'В валюте маржи',3:'% от цены'})[p.swapType]??'Не указан'],['Тройной swap',day[p.tripleSwapDay]??'Не передан API'],['Доступность',p.tradeMode===2?'Полная торговля':p.tradeMode===1?'Только закрытие':p.tradeMode===3?'Только BUY':p.tradeMode===4?'Только SELL':'Торговля выключена']];
+  $('catalog-detail').innerHTML=`<span class="tag">${escape(accountNames[profile])}</span><h3>${escape(p.symbol)}</h3><p>${escape(p.description)}</p>${!p.quoteAvailable?'<p class="missing-data">Нет корректной котировки в снимке. Для расчета введите цену вручную.</p>':''}<dl>${fields.map(([k,v])=>`<dt>${escape(k)}</dt><dd>${escape(v)}</dd>`).join('')}</dl><p class="small-note">Комиссии и своп не начисляются автоматически. Непереданные параметры не принимаются за нулевые. Групповые имена символов и делители маржи применяются при выборе инструмента.</p>`;
 }
 $('open-catalog').onclick=()=>openCatalog();$('close-catalog').onclick=()=>$('catalog-dialog').close();
 $('catalog-search').oninput=renderCatalog;$('catalog-category').onchange=renderCatalog;$('catalog-profile').onchange=renderCatalog;
 $('catalog-rows').onclick=e=>{const inspect=e.target.closest('[data-inspect]'),add=e.target.closest('[data-catalog-add]');if(inspect){inspected=inspect.dataset.inspect;renderCatalog();}if(add){const profile=$('catalog-profile').value,spec=findInstrument(add.dataset.catalogAdd,profile);let p=catalogTarget?state.positions.find(x=>x.id===catalogTarget):null;if(!p){p=position();state.positions.push(p);}Object.assign(p,instrumentSettings(spec,state.account.currency,profile,p.side));state.brokerAccount=profile;fullRender();$('catalog-dialog').close();toast(`${spec.symbol}: параметры ${accountNames[profile]} применены. Проверьте текущую цену.`);}};
-$('broker-profile').onchange=e=>{state.brokerAccount=e.target.value;persist();toast('Профиль выбран для следующих инструментов. Уже введенные позиции сохраняют свою спецификацию.');};
+$('broker-profile').onchange=e=>{state.brokerAccount=e.target.value;renderPositions();persist();toast('Группа выбрана для каталога. Чтобы обновить введенные позиции, примените группу.');};
+let pendingGroupPlan=[];
+$('apply-group').onclick=()=>{
+  pendingGroupPlan=groupApplicationPlan(state.positions,state.brokerAccount,state.account.currency);
+  const meta=profileInfo(state.brokerAccount),blocked=pendingGroupPlan.some(p=>p.error);
+  $('group-plan').innerHTML=`<h3>${escape(meta.label)}</h3><code>${escape(meta.group??meta.label)}</code><ul>${pendingGroupPlan.map(p=>`<li><strong>${escape(p.from)}${p.to&&p.to!==p.from?' → '+escape(p.to):''}</strong><span class="${p.error?'negative':''}">${escape(p.error??(p.changes.join('; ')||'Параметры совпадают'))}</span></li>`).join('')}</ul>${blocked?'<p class="negative">Группа не применяется: сначала удалите или замените отсутствующие инструменты. Старые спецификации не будут смешаны с новой группой.</p>':''}`;
+  $('confirm-group').disabled=blocked;$('group-dialog').showModal();
+};
+$('close-group').onclick=()=>$('group-dialog').close();
+$('confirm-group').onclick=()=>{if(pendingGroupPlan.some(p=>p.error)||!pendingGroupPlan.length)return;state.positions=pendingGroupPlan.map(p=>p.position);fullRender();$('group-dialog').close();toast('Групповые спецификации применены. Цены и объемы сохранены.');pendingGroupPlan=[];};
 $('account-label').oninput=e=>{state.account.label=e.target.value;persist();};
 $('margin-source').onchange=e=>{state.account.marginSource=e.target.value;if(!Number.isFinite(state.account.usedMargin))state.account.usedMargin=lastAnalysis?.current?.margin??1000;accountControls();compute();};
 $('margin-policy').onchange=e=>{state.account.marginPolicy=e.target.value;compute();};

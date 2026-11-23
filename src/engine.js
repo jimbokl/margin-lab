@@ -37,7 +37,9 @@ export function validate(s) {
     if (typeof p.symbol !== 'string' || !p.symbol.trim() || p.symbol.length > 24) errors.push(prefix + 'название инструмента — от 1 до 24 символов.');
     if (typeof p.quote !== 'string' || !/^[A-Z]{3,5}$/.test(p.quote)) errors.push(prefix + 'укажите валюту котировки буквами A–Z.');
     if (!['BUY', 'SELL'].includes(p.side)) errors.push(prefix + 'выберите BUY или SELL.');
-    for (const [key, label, max] of [['lots', 'объем', 1e6], ['contract', 'контракт', 1e9], ['price', 'текущая цена', 1e9], ['entry', 'цена входа', 1e9], ['leverage', 'плечо', 1e6], ['conversion', 'курс конвертации', 1e6]]) {
+    const numberFields=[['lots', 'объем', 1e6], ['contract', 'контракт', 1e9], ['price', 'текущая цена', 1e9], ['leverage', 'плечо', 1e6], ['conversion', 'курс конвертации', 1e6]];
+    if(a.mode==='balance')numberFields.push(['entry','цена входа',1e9]);
+    for (const [key, label, max] of numberFields) {
       if (!finite(p[key]) || p[key] <= 0 || p[key] > max) errors.push(prefix + `${label} должен быть больше 0 и не больше ${max}.`);
     }
     if (p.quote === a.currency && p.conversion !== 1) errors.push(prefix + 'для валюты котировки, совпадающей с валютой счета, курс должен быть 1.');
@@ -64,6 +66,7 @@ export function validate(s) {
     for(const p of s.positions){if(!groups.has(p.symbol))groups.set(p.symbol,[]);groups.get(p.symbol).push(p);}
     for(const [symbol,ps] of groups) {
       if(a.marginPolicy==='hedged'&&ps.some(p=>!p.spec||p.marginMode!=='broker'))errors.push(`${symbol}: учет хеджа по спецификации требует модель Investizo для всех строк.`);
+      if(a.marginPolicy==='hedged'&&ps.some(p=>!finite(p.spec?.hedgedMargin)||p.spec.hedgedMargin<0))errors.push(`${symbol}: API не передал Hedged Margin. Используйте Used Margin из терминала или другую политику.`);
       const first=ps[0];
       for(const p of ps.slice(1)) {
         const keys=['price','contract','leverage','conversion','beta','marginMode','marginConversion'];
@@ -85,7 +88,7 @@ export function coefficients(s) {
     const units = p.lots * p.contract;
     const signed = p.side === 'BUY' ? 1 : -1;
     const pnlUnits=p.pnlMode==='custom'?p.moneyPerPrice:units*p.conversion;
-    const pnl = signed * pnlUnits * (p.price - p.entry)+(p.swap??0)+(p.commission??0);
+    const pnl = finite(p.entry)?signed*pnlUnits*(p.price-p.entry)+(p.swap??0)+(p.commission??0):null;
     const notional = units * p.price * p.conversion;
     let m = p.marginMode === 'manual' ? p.manualMargin : notional / p.leverage;
     const slope = signed * pnlUnits * p.price * p.beta;
